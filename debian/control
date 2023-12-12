@@ -1,0 +1,20 @@
+Source: cryptsetup-2fa
+Section: admin
+Priority: optional
+Maintainer: YunQiang <syq@debian.org>
+Rules-Requires-Root: no
+Build-Depends: initramfs-tools,
+ debhelper-compat (= 13),
+Standards-Version: 4.6.2
+#Homepage: <insert the upstream URL, if relevant>
+#Vcs-Browser: https://salsa.debian.org/debian/cryptsetup-2fa-0.1
+#Vcs-Git: https://salsa.debian.org/debian/cryptsetup-2fa-0.1.git
+
+Package: cryptsetup-2fa
+Architecture: all
+Multi-Arch: foreign
+Depends:
+ ${misc:Depends}, initramfs-tools, cryptsetup, cryptsetup-initramfs,
+ tpm2-tools, yubikey-personalization
+Description: 2FA plugin for cryptsetup
+ TPM2 keypair and yubikey challenge are supported now.

@@ -1,0 +1,4 @@
+cryptsetup-2fa-enroll /usr/sbin/
+initramfs/cryptsetup-2fa /usr/share/initramfs-tools/hooks/
+keyscript /usr/lib/cryptsetup/2fa/
+2fa.conf /etc/cryptsetup/2fa/

@@ -1,0 +1,93 @@
+Please edit /etc/cryptsetup/2fa/2fa.conf
+
+1. Modify this line as your partname
+
+	declare -A sda4_crypt
+	sda4_crypt["methods"]="tpm2-keypair,yubikey-challenge"
+
+1. TPM2 keypair support.
+
+	sda4_crypt["tpm2-keypair-pin"]="12345"
+	sda4_crypt["tpm2-keypair-luksslot"]=1
+
+2. Yubikey challenge support.
+
+	sda4_crypt["yubikey-challenge-luksslot"]=2
+	sda4_crypt["yubikey-challenge-ykslot"]=2
+	sda4_crypt["yubikey-challenge-pass"]="123456"
+
+3. run
+	ykpersonalize -YKSLOT -ochal-resp -ochal-hmac -ohmac-lt64 -oserial-api-visible
+	cryptsetup-2fa-enroll sda4_crypt
+	   and/or for any other devices
+
+4. Delete the pin/pass in /etc/cryptsetup/2fa/2fa.conf
+
+5. add the options
+	initramfs,keyscript=/usr/lib/cryptsetup/2fa/keyscript
+   into /etc/crypttab
+
+5. Update initramfs
+	update-initramfs -u -k all
+	systemctl daemon-reload
+
+
+
+How it works
+
+1. TPM2-keypair
+
+   1.1 Generates a keypair in /etc/cryptsetup/2fa:
+	primary.ctx, key.priv, key.pub
+   1.2 Get 64byte random, and store them in /etc/cryptsetup/2fa
+        ${target}.plain
+   1.2 Read a pin and calc the sha256sum, cut the first 16 bytes as IV of AES.
+        ${target}.hpin
+   1.3 Encrypt ${target}.plain to ${target}.enc
+   1.4 Remove ${target}.plain and ${target}.hpin
+
+2. Yubikey-challenge
+   Challenge the Yubikey with sha256sum of the PIN.
+
+
+How keyscript works
+
+   1. The start script of cryptsetup will call it with some env set, include
+	CRYPTTAB_SOURCE=sda4_crypt
+      See crypttab(5) for more details.
+   2. It will use /run/cryptsetup/2fa.log as a flag file.
+   3. Try yubikey first.
+	if tried, just RETURN;
+	if success, print the passphrase, and EXIT;
+	If fail, RETURN.
+      Anyway, echo a mark to /run/cryptsetup/2fa.log
+      In fact 2 tries: if the PIN in 2fa.conf is incorrect.
+	It is useful, if you have 2 yubikey, one is for password-less and one
+	is password-needed.
+   3. Try TPM2,then
+	if tried, just RETURN;
+	if success, print the passphrase, and EXIT;
+	If fail, RETURN.
+   4. If All of them fail, ASK for a normal LUKS password.
+
+
+TIPS: How to encrypt /boot parition.
+
+   1. umount /boot/efi
+   2. cp -r /boot /root/boot-bak
+   3. umount /boot
+   4. cryptsetup close sda2_crypt # Change it if needed
+   5. cryptsetup luksFormat --pbkdf pbkdf2 /dev/sda2
+   6. cryptsetup open /dev/sda2 sda2_crypt
+   7. mkfs.ext4 /dev/mapper/sda2_crypt
+   8. modify /etc/fstab
+   9. modify /etc/crypttab, add line like
+      echo sda2_crypt UUID=XXXXXXXXXXXX none luks,discard
+   10. systemctl daemon-reload
+   11. cryptsetup open /dev/sda2 sda2_crypt
+   12. mount /boot
+   13. mount /boot/efi
+   14. add GRUB_ENABLE_CRYPTODISK=y to /etc/default/grub
+   15. cp -r /root/boot-bak/* /boot
+   16. grub-install
+   17. update-grub

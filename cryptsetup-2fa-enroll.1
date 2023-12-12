@@ -1,0 +1,32 @@
+.TH CRYPTSETUP-2FA-ENROLL "1" "Dec 2023" "cryptsetup 2fa" "User Commands"
+
+.SH NAME
+cryptsetup-2fa-enroll - enroll TPM2 and/or Yubikey for usage with LUKS
+.SH SYNOPSIS
+.B cryptsetup-2fa-enroll TARGET [DO_TEST=1]
+.SH DESCRIPTION
+With this tool you can take a YubiKey with challenge-response enabled on any
+slot to add a LUKS / cryptsetup key slot.
+
+And, you can also create a TPM2 keypair, to encrypt your LUKS key.
+
+.SH PREREQUISITES
+Before using this tool, be sure /etc/cryptsetup/2fa.conf
+contains what you want.
+
+Before adding the Yubikey to the LUKS slot, you need to initialize
+your Yubikey. You can do so using the privacyIDEA management system
+or simply by using the command line. The following command will
+create a key for challenges response in Yubikey slot 2:
+
+    ykpersonalize -2 -ochal-resp -ochal-hmac -ohmac-lt64 -oserial-api-visible   
+
+After this, you can use yubikey-luks-enroll to assign this Yubikey
+to an LUKS slot.
+
+.SH SEE ALSO
+.BR cryptsetup (1),
+.BR ykpersonalize (1),
+.BR ykchalresp (1).
+.BR tpm2_load (1).
+.BR tpm2_encryptdecrypt (1).

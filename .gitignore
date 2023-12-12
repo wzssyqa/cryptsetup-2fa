@@ -1,0 +1,13 @@
+key.ctx
+key.pub
+key.priv
+primary.ctx
+*.dec
+*.enc
+*.hpin
+*.hpinx
+debian/.debhelper
+debian/debhelper-build-stamp
+debian/cryptsetup-2fa
+debian/cryptsetup-2fa.*
+debian/files

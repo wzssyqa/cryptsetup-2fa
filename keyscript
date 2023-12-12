@@ -1,0 +1,115 @@
+#!/bin/bash
+
+. /etc/cryptsetup/2fa/2fa.conf
+
+
+target="$CRYPTTAB_NAME"
+declare -n T="$target"
+methods=",${T["methods"]},"
+ykslot=${T["yubikey-challenge-ykslot"]}
+ykpass=${T["yubikey-challenge-pass"]}
+tpm2pin="${T["tpm2-keypair-pin"]}"
+
+if [ -z "$cryptkeyscript" ]; then
+	if [ -x /bin/plymouth ] && plymouth --ping; then
+		cryptkeyscript="plymouth ask-for-password --prompt"
+	else
+		cryptkeyscript="/lib/cryptsetup/askpass"
+	fi
+fi
+
+_check_yubikey() {
+	ykinfo -${ykslot} -q 2>/dev/null
+}
+
+_do_yubikey_challenge() {
+	local pin=$1
+	local P1=$(printf %s "$pin" | sha256sum | awk '{print $1}')
+	local R="$(printf %s "$P1" | ykchalresp -"$ykslot" -x -i- 2>/dev/null || true)"
+	length=`echo -n $R | wc -c`
+	if [ $length -lt 40 ];then
+		echo "Yubikey response fail" >&2
+		return
+	fi
+	R="$(printf %s "$R" | xxd -r -p | base64 -w 0)"
+	echo -n "$R"
+}
+
+yubikey_challenge() {
+	touch /run/cryptsetup/${target}-2fa.log
+	if [ -z "$(echo $methods | grep ',yubikey-challenge,')" ];then
+		return
+	fi
+	if [ -z "${ykslot}" ];then
+		echo "No ykslot is given. Skip yubikey." >&2
+		return
+	fi
+	if [ -z "$(_check_yubikey)" ];then
+		echo "No yubikey is present. Skip yubikey." >&2
+		return
+	fi
+	if [ -n "${ykpass}" ] && [ -z "$(grep 'ykpass_used' /run/cryptsetup/${target}-2fa.log)" ];then
+		local R=$(_do_yubikey_challenge ${ykpass})
+		if [ -z "$R" ];then
+			return
+		fi
+		echo ykpass_used >> /run/cryptsetup/${target}-2fa.log
+		echo -n "$R"
+		exit 0
+	fi
+	if [ -z "$(grep 'yubikey_used' /run/cryptsetup/${target}-2fa.log)" ];then
+		local pin="$($cryptkeyscript "Please enter a yubikey challenge password for $target:")"
+		local R=$(_do_yubikey_challenge ${pin})
+		if [ -z "$R" ];then
+			return
+		fi
+		echo yubikey_used >> /run/cryptsetup/${target}-2fa.log
+		echo -n "$R"
+		exit 0
+	fi
+}
+
+tpm2_keypair() {
+	touch /run/cryptsetup/${target}-2fa.log
+	mkdir -p /run/cryptsetup/2fa
+	if [ -z "$(echo $methods | grep ',tpm2-keypair,')" ];then
+		return
+	fi
+	if [ -n "$(grep 'tpm2_keypair_used' /run/cryptsetup/${target}-2fa.log)" ];then
+		return
+	fi
+	if ! tpm2_selftest;then
+		echo "tpm2_selftest fail" >&2
+		return
+	fi
+	if [ ! -e /etc/cryptsetup/2fa/key.pub ] || [ ! -e /etc/cryptsetup/2fa/key.priv ] || [ ! -e /etc/cryptsetup/2fa/${target}.enc ];then
+		echo "Cannot find tpm2 key files" >&2
+		return
+	fi
+	local pin=$tpm2pin
+	if [ -z "$pin" ];then
+		pin=$(${cryptkeyscript} "Please input the PIN for TPM2 keypair for $target: ")
+	fi
+	pin=`echo $pin | sha256sum | cut -b 1-16`
+	echo -n $pin > /run/cryptsetup/2fa/${target}.hpinx
+	rm -f /run/cryptsetup/2fa/primary.ctx /run/cryptsetup/2fa/key.ctx
+	rm -f /run/cryptsetup/2fa/${target}.hpinx /run/cryptsetup/2fa/${target}.dec
+	tpm2_createprimary -c /run/cryptsetup/2fa/primary.ctx >> /run/cryptsetup/${target}-2fa.log
+	tpm2_load -C /run/cryptsetup/2fa/primary.ctx -u /etc/cryptsetup/2fa/key.pub -r /etc/cryptsetup/2fa/key.priv -c /run/cryptsetup/2fa/key.ctx >> /run/cryptsetup/${target}-2fa.log
+	tpm2_encryptdecrypt -d -c /run/cryptsetup/2fa/key.ctx --iv=/run/cryptsetup/2fa/${target}.hpinx -o /run/cryptsetup/2fa/${target}.dec /etc/cryptsetup/2fa/${target}.enc
+	local dec=$(cat /run/cryptsetup/2fa/${target}.dec 2>/dev/null)
+	rm -f /run/cryptsetup/2fa/primary.ctx /run/cryptsetup/2fa/key.ctx
+	rm -f /run/cryptsetup/2fa/${target}.hpinx /run/cryptsetup/2fa/${target}.dec
+	if [ -z "$dec" ];then
+		return
+	fi
+	cat /run/cryptsetup/2fa/${target}.dec 
+	echo tpm2_keypair_used >> /run/cryptsetup/${target}-2fa.log
+	exit 0
+}
+
+yubikey_challenge
+tpm2_keypair
+
+echo "Fallback to normal password" >&2
+$cryptkeyscript "Please enter a normal password for cryptsetup for $target:"

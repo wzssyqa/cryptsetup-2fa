@@ -1,0 +1,192 @@
+#!/bin/bash
+
+_get_dev() {
+	local t=$1
+	if [ -z "$t" ];then
+		echo "Error: Unknown block dev"
+		exit 1
+	fi
+	t=`grep -e "^$t\s\+" /etc/crypttab`
+	t=`echo $t | awk '{print $2}'`
+	if [[ $t =~ UUID=.* ]];then
+		local uuid=`echo $t | sed 's/UUID=//' | sed 's/"//g'`
+		t="/dev/disk/by-uuid/$uuid"
+	fi
+	if [[ $t == "/dev/"* ]];then
+		if [ ! -b "$t" ];then
+			echo "Error: is NOT a block device"
+			exit 1
+		fi
+		echo $t
+		return
+	fi
+	echo "Error: Unknown dev name format"
+	exit 1
+}
+
+_generate_tpm2_keypair() {
+	local target=$1
+	set -e
+	rm -f /etc/cryptsetup/2fa/primary.ctx /etc/cryptsetup/2fa/key.ctx
+	tpm2_createprimary -c /etc/cryptsetup/2fa/primary.ctx >/dev/null
+	if [ ! -e "/etc/cryptsetup/2fa/key.pub" ] || [ ! -e "/etc/cryptsetup/2fa/key.priv" ];then
+		echo "Generating key pair..."
+		tpm2_create -C /etc/cryptsetup/2fa/primary.ctx -Gaes256 -u /etc/cryptsetup/2fa/key.pub -r /etc/cryptsetup/2fa/key.priv
+	fi
+	tpm2_load -C /etc/cryptsetup/2fa/primary.ctx -u /etc/cryptsetup/2fa/key.pub -r /etc/cryptsetup/2fa/key.priv -c /etc/cryptsetup/2fa/key.ctx
+
+	if [ ! -e "/etc/cryptsetup/2fa/${target}.plain" ] && [ ! -e "/etc/cryptsetup/2fa/${target}.enc" ]; then
+		(tpm2_getrandom 32; tpm2_getrandom 32) | base64 -w 0 > /etc/cryptsetup/2fa/${target}.plain
+	fi
+	# 2nd run, the plain has be removed or
+	# 1st run, we have no enc yet.
+	if [ ! -e "/etc/cryptsetup/2fa/${target}.plain" ] || [ ! -e "/etc/cryptsetup/2fa/${target}.enc" ]; then
+		# USE the sha256 value of pin as IV of AES.
+		local pin=$tpm2_keypair_pin
+		local pin2=$pin
+		if [ -z "$pin" ];then
+			pin=$(systemd-ask-password "Please input the PIN for TPM2: ")
+			pin2=$(systemd-ask-password "Please input the PIN again: ")
+			if [ "$pin" != "$pin2" ];then
+				echo "Passwords do not match"
+				exit 1
+			fi
+		fi
+		pin=`echo $pin | sha256sum | cut -b 1-16`
+        	echo -n $pin > /etc/cryptsetup/2fa/${target}.hpin
+	fi
+	if [ ! -e "/etc/cryptsetup/2fa/${target}.enc" ]; then
+		tpm2_encryptdecrypt -c /etc/cryptsetup/2fa/key.ctx --iv=/etc/cryptsetup/2fa/${target}.hpin -o /etc/cryptsetup/2fa/${target}.enc /etc/cryptsetup/2fa/${target}.plain
+	fi
+	if [ ! -e "/etc/cryptsetup/2fa/${target}.dec" ]; then
+		tpm2_encryptdecrypt -d -c /etc/cryptsetup/2fa/key.ctx --iv=/etc/cryptsetup/2fa/${target}.hpin -o /etc/cryptsetup/2fa/${target}.dec /etc/cryptsetup/2fa/${target}.enc
+	fi
+	set +e
+}
+
+_setup_tpm2_keypair() {
+	local target=$1
+	local luksslot=$2
+	local dev=`_get_dev $target`
+
+
+	read -p "Really Kill slot ${luksslot} of $dev? (yes/no)" yn
+	if [[ "$yn" != "yes" ]];then
+		return
+	fi
+	cryptsetup luksKillSlot $dev ${luksslot}
+	cryptsetup luksAddKey  --hash sha512 --new-key-slot ${luksslot} $dev /etc/cryptsetup/2fa/${target}.dec
+
+	if [ "$DO_TEST" != "1" ];then
+		return
+	fi
+	echo "Let's try our new keyfile"
+	local pin=$tpm2_keypair_pin
+	if [ -z "$pin" ];then
+		pin=$(systemd-ask-password "Please input the PIN to try TPM2: ")
+	fi
+	pin=`echo $pin | sha256sum | cut -b 1-16`
+	echo -n $pin > /etc/cryptsetup/2fa/${target}.hpinx
+	tpm2_encryptdecrypt -d -c /etc/cryptsetup/2fa/key.ctx --iv=/etc/cryptsetup/2fa/${target}.hpinx -o /etc/cryptsetup/2fa/${target}.dec /etc/cryptsetup/2fa/${target}.enc
+	cryptsetup close $target
+	cryptsetup open --key-file /etc/cryptsetup/2fa/${target}.dec $dev $target
+	cryptsetup status $target
+}
+
+_setup_yubikey_challenge() {
+	local target=$1
+	local luksslot=$2
+	local keyfile=$3
+	local dev=`_get_dev $target`
+
+
+	read -p "Really Kill slot ${luksslot} of $dev? (yes/no)" yn
+	if [[ "$yn" != "yes" ]];then
+		return
+	fi
+	cryptsetup luksKillSlot $dev ${luksslot}
+	cryptsetup luksAddKey  --hash sha512 --new-key-slot ${luksslot} $dev $keyfile
+
+	if [ "$DO_TEST" != "1" ];then
+		return
+	fi
+	cryptsetup close $target 
+	cryptsetup open --key-file $keyfile $dev $target
+	cryptsetup status $target
+}
+_finish() {
+	rm -f \
+		/etc/cryptsetup/2fa/primary.ctx \
+		/etc/cryptsetup/2fa/key.ctx \
+		/etc/cryptsetup/2fa/${target}.dec \
+		/etc/cryptsetup/2fa/${target}.plain \
+		/etc/cryptsetup/2fa/${target}.hpin \
+		/etc/cryptsetup/2fa/${target}.hpinx \
+		/etc/cryptsetup/2fa/${target}.ykr
+	chmod -R og-rwx /etc/cryptsetup/2fa
+}
+
+. /etc/cryptsetup/2fa/2fa.conf
+
+target="$1"
+if [ -z "$target" ];then
+	echo "Usage: $0 target"
+	exit 1
+fi
+
+declare -n T="$target"
+methods=",${T["methods"]},"
+#DO_TEST=1
+
+if [ -n "$(echo $methods | grep ',tpm2-keypair,')" ];then
+	if ! tpm2_selftest;then
+		echo "tpm2_selftest fail" >&2
+		exit 1
+	fi
+	tpm2_keypair_pin="${T["tpm2-keypair-pin"]}"
+	luksslot=${T["tpm2-keypair-luksslot"]}
+	if ! [[ $luksslot =~ ^[0-9]+$ ]];then
+		echo "Error: illegal luksslot ${luksslot}"
+		exit 1
+	fi
+	_generate_tpm2_keypair $target
+	_setup_tpm2_keypair $target $luksslot
+fi
+
+if [ -n "$(echo $methods | grep ',yubikey-challenge,')" ];then
+	if ! lsusb | grep -iq 'yubico'; then 
+		printf "Please insert a yubikey and try again. SKIP yubikey-challenge for $target\n"
+		exit 1
+	fi
+	ykpass=${T["yubikey-challenge-pass"]}
+	if [ -z "$ykpass" ];then
+		P1=$(systemd-ask-password "Please enter the yubikey challenge password:" )
+		P2=$(systemd-ask-password "Please enter the yubikey challenge password again:")
+		if [ "$P1" != "$P2" ]; then
+			echo "Passwords do not match"
+			exit 1
+		fi
+	else
+		P1=$ykpass
+		P2=$ykpass
+	fi
+	P1=$(printf %s "$P1" | sha256sum | awk '{print $1}')
+
+	ykslot=${T["yubikey-challenge-ykslot"]}
+	luksslot=${T["yubikey-challenge-luksslot"]}
+	if [ -z "$ykslot" ] || [ -z "$luksslot" ] ;then
+		echo "ykslot or luksslot is not given"
+		exit 1
+	fi
+	R="$(printf %s "$P1" | ykchalresp -"$ykslot" -x -i- 2>/dev/null || true)"
+	length=`echo -n $R | wc -c`
+	if [ $length -lt 40 ];then
+		echo "Yubikey response fail"
+		exit 1
+	fi
+	echo -n "$R" | xxd -r -p | base64 -w 0 > /etc/cryptsetup/2fa/${target}.ykr
+	_setup_yubikey_challenge $target $luksslot /etc/cryptsetup/2fa/${target}.ykr
+fi
+
+
+trap _finish EXIT

@@ -18,6 +18,8 @@ esac
 
 . /usr/share/initramfs-tools/hook-functions
 
+MULTIARCH=`dpkg-architecture -qDEB_HOST_MULTIARCH`
+
 copy_exec /bin/bash
 copy_exec /usr/bin/ykchalresp
 copy_exec /usr/bin/ykinfo
@@ -25,6 +27,8 @@ copy_exec /usr/bin/sha256sum
 copy_exec /usr/bin/tpm2_selftest
 copy_exec /usr/bin/tpm2_load
 copy_exec /usr/bin/tpm2_encryptdecrypt
+copy_exec /usr/bin/tpm2_createprimary
+copy_exec /usr/lib/${MULTIARCH}/libtss2-tcti-device.so.0
 mkdir -p "${DESTDIR}/usr/lib/cryptsetup"
 mkdir -p "${DESTDIR}/etc/cryptsetup"
 cp -r /usr/lib/cryptsetup/2fa "${DESTDIR}/usr/lib/cryptsetup"

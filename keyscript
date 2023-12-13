@@ -9,6 +9,8 @@ methods=",${T["methods"]},"
 ykslot=${T["yubikey-challenge-ykslot"]}
 ykpass=${T["yubikey-challenge-pass"]}
 tpm2pin="${T["tpm2-keypair-pin"]}"
+tmp2cached="${T["tpm2-keypair-cached"]}"
+ykcached="${T["yubikey-challenge-cached"]}"
 
 if [ -z "$cryptkeyscript" ]; then
 	if [ -x /bin/plymouth ] && plymouth --ping; then
@@ -36,9 +38,17 @@ _do_yubikey_challenge() {
 }
 
 yubikey_challenge() {
-	touch /run/cryptsetup/${target}-2fa.log
+	mkdir -p /run/cryptsetup/2fa
+	touch /run/cryptsetup/2fa/${target}.log
+	touch /run/cryptsetup/2fa/log
 	if [ -z "$(echo $methods | grep ',yubikey-challenge,')" ];then
 		return
+	fi
+	local cached_ykpass=$(grep '^cached_ykpass=' /run/cryptsetup/2fa/log | cut -d= -f2-)
+	if [ -n "${cached_ykpass}" ] && [ -z "$(grep 'cached_ykpass_used' /run/cryptsetup/2fa/${target}.log)" ];then
+		echo cached_ykpass_used >> /run/cryptsetup/2fa/${target}.log
+		echo -n "$cached_ykpass"
+		exit 0
 	fi
 	if [ -z "${ykslot}" ];then
 		echo "No ykslot is given. Skip yubikey." >&2
@@ -48,34 +58,43 @@ yubikey_challenge() {
 		echo "No yubikey is present. Skip yubikey." >&2
 		return
 	fi
-	if [ -n "${ykpass}" ] && [ -z "$(grep 'ykpass_used' /run/cryptsetup/${target}-2fa.log)" ];then
+	if [ -n "${ykpass}" ] && [ -z "$(grep 'ykpass_used' /run/cryptsetup/2fa/${target}.log)" ];then
 		local R=$(_do_yubikey_challenge ${ykpass})
 		if [ -z "$R" ];then
 			return
 		fi
-		echo ykpass_used >> /run/cryptsetup/${target}-2fa.log
+		echo ykpass_used >> /run/cryptsetup/2fa/${target}.log
 		echo -n "$R"
+		[ "$ykcached" = "1" ] && echo "cached_ykpass=$R" > /run/cryptsetup/2fa/log
 		exit 0
 	fi
-	if [ -z "$(grep 'yubikey_used' /run/cryptsetup/${target}-2fa.log)" ];then
+	if [ -z "$(grep 'yubikey_used' /run/cryptsetup/2fa/${target}.log)" ];then
 		local pin="$($cryptkeyscript "Please enter a yubikey challenge password for $target:")"
 		local R=$(_do_yubikey_challenge ${pin})
 		if [ -z "$R" ];then
 			return
 		fi
-		echo yubikey_used >> /run/cryptsetup/${target}-2fa.log
+		echo yubikey_used >> /run/cryptsetup/2fa/${target}.log
 		echo -n "$R"
+		[ "$ykcached" = "1" ] && echo "cached_ykpass=$R" >> /run/cryptsetup/2fa/log
 		exit 0
 	fi
 }
 
 tpm2_keypair() {
-	touch /run/cryptsetup/${target}-2fa.log
 	mkdir -p /run/cryptsetup/2fa
+	touch /run/cryptsetup/2fa/${target}.log
+	touch /run/cryptsetup/2fa/log
 	if [ -z "$(echo $methods | grep ',tpm2-keypair,')" ];then
 		return
 	fi
-	if [ -n "$(grep 'tpm2_keypair_used' /run/cryptsetup/${target}-2fa.log)" ];then
+	local cached_tmp2pass=$(grep '^cached_tpm2pass=' /run/cryptsetup/2fa/log | cut -d= -f2-)
+	if [ -n "${cached_tmp2pass}" ] && [ -z "$(grep 'cached_tmp2pass_used' /run/cryptsetup/2fa/${target}.log)" ];then
+		echo cached_tpm2pass_used >> /run/cryptsetup/2fa/${target}.log
+		echo -n "$cached_tpm2pass"
+		exit 0
+	fi
+	if [ -n "$(grep 'tpm2_keypair_used' /run/cryptsetup/2fa/${target}.log)" ];then
 		return
 	fi
 	if ! tpm2_selftest;then
@@ -94,8 +113,8 @@ tpm2_keypair() {
 	echo -n $pin > /run/cryptsetup/2fa/${target}.hpinx
 	rm -f /run/cryptsetup/2fa/primary.ctx /run/cryptsetup/2fa/key.ctx
 	rm -f /run/cryptsetup/2fa/${target}.hpinx /run/cryptsetup/2fa/${target}.dec
-	tpm2_createprimary -c /run/cryptsetup/2fa/primary.ctx >> /run/cryptsetup/${target}-2fa.log
-	tpm2_load -C /run/cryptsetup/2fa/primary.ctx -u /etc/cryptsetup/2fa/key.pub -r /etc/cryptsetup/2fa/key.priv -c /run/cryptsetup/2fa/key.ctx >> /run/cryptsetup/${target}-2fa.log
+	tpm2_createprimary -c /run/cryptsetup/2fa/primary.ctx >> /run/cryptsetup/2fa/${target}.log
+	tpm2_load -C /run/cryptsetup/2fa/primary.ctx -u /etc/cryptsetup/2fa/key.pub -r /etc/cryptsetup/2fa/key.priv -c /run/cryptsetup/2fa/key.ctx >> /run/cryptsetup/2fa/${target}.log
 	tpm2_encryptdecrypt -d -c /run/cryptsetup/2fa/key.ctx --iv=/run/cryptsetup/2fa/${target}.hpinx -o /run/cryptsetup/2fa/${target}.dec /etc/cryptsetup/2fa/${target}.enc
 	local dec=$(cat /run/cryptsetup/2fa/${target}.dec 2>/dev/null)
 	rm -f /run/cryptsetup/2fa/primary.ctx /run/cryptsetup/2fa/key.ctx
@@ -103,8 +122,10 @@ tpm2_keypair() {
 	if [ -z "$dec" ];then
 		return
 	fi
-	cat /run/cryptsetup/2fa/${target}.dec 
-	echo tpm2_keypair_used >> /run/cryptsetup/${target}-2fa.log
+	local R=$(cat /run/cryptsetup/2fa/${target}.dec)
+	[ "$tmp2cached" = "1" ] && echo "cached_tmp2pass=$R" >> /run/cryptsetup/2fa/log
+	echo $R
+	echo tpm2_keypair_used >> /run/cryptsetup/2fa/${target}.log
 	exit 0
 }
 

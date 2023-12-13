@@ -69,7 +69,7 @@ yubikey_challenge() {
 		exit 0
 	fi
 	if [ -z "$(grep 'yubikey_used' /run/cryptsetup/2fa/${target}.log)" ];then
-		local pin="$($cryptkeyscript "Please enter a yubikey challenge password for $target:")"
+		local pin="$($cryptkeyscript "Please enter a yubikey challenge password for $target")"
 		local R=$(_do_yubikey_challenge ${pin})
 		if [ -z "$R" ];then
 			return
@@ -107,7 +107,7 @@ tpm2_keypair() {
 	fi
 	local pin=$tpm2pin
 	if [ -z "$pin" ];then
-		pin=$(${cryptkeyscript} "Please input the PIN for TPM2 keypair for $target: ")
+		pin=$(${cryptkeyscript} "Please input the PIN for TPM2 keypair for $target")
 	fi
 	pin=`echo $pin | sha256sum | cut -b 1-16`
 	echo -n $pin > /run/cryptsetup/2fa/${target}.hpinx
@@ -133,4 +133,4 @@ yubikey_challenge
 tpm2_keypair
 
 echo "Fallback to normal password" >&2
-$cryptkeyscript "Please enter a normal password for cryptsetup for $target:"
+$cryptkeyscript "Please enter a normal password for cryptsetup for $target"

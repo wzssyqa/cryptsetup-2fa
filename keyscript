@@ -112,19 +112,18 @@ tpm2_keypair() {
 	pin=`echo $pin | sha256sum | cut -b 1-16`
 	echo -n $pin > /run/cryptsetup/2fa/${target}.hpinx
 	rm -f /run/cryptsetup/2fa/primary.ctx /run/cryptsetup/2fa/key.ctx
-	rm -f /run/cryptsetup/2fa/${target}.hpinx /run/cryptsetup/2fa/${target}.dec
 	tpm2_createprimary -c /run/cryptsetup/2fa/primary.ctx >> /run/cryptsetup/2fa/${target}.log
 	tpm2_load -C /run/cryptsetup/2fa/primary.ctx -u /etc/cryptsetup/2fa/key.pub -r /etc/cryptsetup/2fa/key.priv -c /run/cryptsetup/2fa/key.ctx >> /run/cryptsetup/2fa/${target}.log
 	tpm2_encryptdecrypt -d -c /run/cryptsetup/2fa/key.ctx --iv=/run/cryptsetup/2fa/${target}.hpinx -o /run/cryptsetup/2fa/${target}.dec /etc/cryptsetup/2fa/${target}.enc
 	local dec=$(cat /run/cryptsetup/2fa/${target}.dec 2>/dev/null)
 	rm -f /run/cryptsetup/2fa/primary.ctx /run/cryptsetup/2fa/key.ctx
-	rm -f /run/cryptsetup/2fa/${target}.hpinx /run/cryptsetup/2fa/${target}.dec
 	if [ -z "$dec" ];then
 		return
 	fi
 	local R=$(cat /run/cryptsetup/2fa/${target}.dec)
+	rm -f /run/cryptsetup/2fa/${target}.hpinx /run/cryptsetup/2fa/${target}.dec
 	[ "$tmp2cached" = "1" ] && echo "cached_tmp2pass=$R" >> /run/cryptsetup/2fa/log
-	echo $R
+	echo -n $R
 	echo tpm2_keypair_used >> /run/cryptsetup/2fa/${target}.log
 	exit 0
 }

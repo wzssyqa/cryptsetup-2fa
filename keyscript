@@ -20,6 +20,17 @@ if [ -z "$cryptkeyscript" ]; then
 	fi
 fi
 
+# When boot, if we create log in /run, they will be keeped after boot.
+#            so, we put them in /var/cache. See man switch_root.
+# When resume from cryptsetup-suspend, the /var is readonly, and
+#            the contents of /run won't be keeped.
+# Let's detect the case.
+cachedir=/var/cache/cryptsetup/2fa
+if ! mkdir -p ${cachedir} 2>/dev/null;then
+	cachedir=/run/cryptsetup/2fa
+	mkdir -p ${cachedir}
+fi
+
 _check_yubikey() {
 	ykinfo -${ykslot} -q 2>/dev/null
 }
@@ -38,15 +49,15 @@ _do_yubikey_challenge() {
 }
 
 yubikey_challenge() {
-	mkdir -p /var/cache/cryptsetup/2fa
-	touch /var/cache/cryptsetup/2fa/${target}.log
-	touch /var/cache/cryptsetup/2fa/log
+	mkdir -p ${cachedir}
+	touch ${cachedir}/${target}.log
+	touch ${cachedir}/log
 	if [ -z "$(echo $methods | grep ',yubikey-challenge,')" ];then
 		return
 	fi
-	local cached_ykpass=$(grep '^cached_ykpass=' /var/cache/cryptsetup/2fa/log | cut -d= -f2-)
-	if [ -n "${cached_ykpass}" ] && [ -z "$(grep 'cached_ykpass_used' /var/cache/cryptsetup/2fa/${target}.log)" ];then
-		echo cached_ykpass_used >> /var/cache/cryptsetup/2fa/${target}.log
+	local cached_ykpass=$(grep '^cached_ykpass=' ${cachedir}/log | cut -d= -f2-)
+	if [ -n "${cached_ykpass}" ] && [ -z "$(grep 'cached_ykpass_used' ${cachedir}/${target}.log)" ];then
+		echo cached_ykpass_used >> ${cachedir}/${target}.log
 		echo -n "$cached_ykpass"
 		exit 0
 	fi
@@ -58,43 +69,43 @@ yubikey_challenge() {
 		echo "No yubikey is present. Skip yubikey." >&2
 		return
 	fi
-	if [ -n "${ykpass}" ] && [ -z "$(grep 'ykpass_used' /var/cache/cryptsetup/2fa/${target}.log)" ];then
+	if [ -n "${ykpass}" ] && [ -z "$(grep 'ykpass_used' ${cachedir}/${target}.log)" ];then
 		local R=$(_do_yubikey_challenge ${ykpass})
 		if [ -z "$R" ];then
 			return
 		fi
-		echo ykpass_used >> /var/cache/cryptsetup/2fa/${target}.log
+		echo ykpass_used >> ${cachedir}/${target}.log
 		echo -n "$R"
-		[ "$ykcached" = "1" ] && echo "cached_ykpass=$R" > /var/cache/cryptsetup/2fa/log
+		[ "$ykcached" = "1" ] && echo "cached_ykpass=$R" > ${cachedir}/log
 		exit 0
 	fi
-	if [ -z "$(grep 'yubikey_used' /var/cache/cryptsetup/2fa/${target}.log)" ];then
+	if [ -z "$(grep 'yubikey_used' ${cachedir}/${target}.log)" ];then
 		local pin="$($cryptkeyscript "Please enter a yubikey challenge password for $target")"
 		local R=$(_do_yubikey_challenge ${pin})
 		if [ -z "$R" ];then
 			return
 		fi
-		echo yubikey_used >> /var/cache/cryptsetup/2fa/${target}.log
+		echo yubikey_used >> ${cachedir}/${target}.log
 		echo -n "$R"
-		[ "$ykcached" = "1" ] && echo "cached_ykpass=$R" >> /var/cache/cryptsetup/2fa/log
+		[ "$ykcached" = "1" ] && echo "cached_ykpass=$R" >> ${cachedir}/log
 		exit 0
 	fi
 }
 
 tpm2_keypair() {
-	mkdir -p /var/cache/cryptsetup/2fa
-	touch /var/cache/cryptsetup/2fa/${target}.log
-	touch /var/cache/cryptsetup/2fa/log
+	mkdir -p ${cachedir}
+	touch ${cachedir}/${target}.log
+	touch ${cachedir}/log
 	if [ -z "$(echo $methods | grep ',tpm2-keypair,')" ];then
 		return
 	fi
-	local cached_tmp2pass=$(grep '^cached_tpm2pass=' /var/cache/cryptsetup/2fa/log | cut -d= -f2-)
-	if [ -n "${cached_tmp2pass}" ] && [ -z "$(grep 'cached_tmp2pass_used' /var/cache/cryptsetup/2fa/${target}.log)" ];then
-		echo cached_tpm2pass_used >> /var/cache/cryptsetup/2fa/${target}.log
+	local cached_tmp2pass=$(grep '^cached_tpm2pass=' ${cachedir}/log | cut -d= -f2-)
+	if [ -n "${cached_tmp2pass}" ] && [ -z "$(grep 'cached_tmp2pass_used' ${cachedir}/${target}.log)" ];then
+		echo cached_tpm2pass_used >> ${cachedir}/${target}.log
 		echo -n "$cached_tpm2pass"
 		exit 0
 	fi
-	if [ -n "$(grep 'tpm2_keypair_used' /var/cache/cryptsetup/2fa/${target}.log)" ];then
+	if [ -n "$(grep 'tpm2_keypair_used' ${cachedir}/${target}.log)" ];then
 		return
 	fi
 	if ! tpm2_selftest;then
@@ -110,21 +121,21 @@ tpm2_keypair() {
 		pin=$(${cryptkeyscript} "Please input the PIN for TPM2 keypair for $target")
 	fi
 	pin=`echo $pin | sha256sum | cut -b 1-16`
-	echo -n $pin > /var/cache/cryptsetup/2fa/${target}.hpinx
-	rm -f /var/cache/cryptsetup/2fa/primary.ctx /var/cache/cryptsetup/2fa/key.ctx
-	tpm2_createprimary -c /var/cache/cryptsetup/2fa/primary.ctx >> /var/cache/cryptsetup/2fa/${target}.log
-	tpm2_load -C /var/cache/cryptsetup/2fa/primary.ctx -u /etc/cryptsetup/2fa/key.pub -r /etc/cryptsetup/2fa/key.priv -c /var/cache/cryptsetup/2fa/key.ctx >> /var/cache/cryptsetup/2fa/${target}.log
-	tpm2_encryptdecrypt -d -c /var/cache/cryptsetup/2fa/key.ctx --iv=/var/cache/cryptsetup/2fa/${target}.hpinx -o /var/cache/cryptsetup/2fa/${target}.dec /etc/cryptsetup/2fa/${target}.enc
-	local dec=$(cat /var/cache/cryptsetup/2fa/${target}.dec 2>/dev/null)
-	rm -f /var/cache/cryptsetup/2fa/primary.ctx /var/cache/cryptsetup/2fa/key.ctx
+	echo -n $pin > ${cachedir}/${target}.hpinx
+	rm -f ${cachedir}/primary.ctx ${cachedir}/key.ctx
+	tpm2_createprimary -c ${cachedir}/primary.ctx >> ${cachedir}/${target}.log
+	tpm2_load -C ${cachedir}/primary.ctx -u /etc/cryptsetup/2fa/key.pub -r /etc/cryptsetup/2fa/key.priv -c ${cachedir}/key.ctx >> ${cachedir}/${target}.log
+	tpm2_encryptdecrypt -d -c ${cachedir}/key.ctx --iv=${cachedir}/${target}.hpinx -o ${cachedir}/${target}.dec /etc/cryptsetup/2fa/${target}.enc
+	local dec=$(cat ${cachedir}/${target}.dec 2>/dev/null)
+	rm -f ${cachedir}/primary.ctx ${cachedir}/key.ctx
 	if [ -z "$dec" ];then
 		return
 	fi
-	local R=$(cat /var/cache/cryptsetup/2fa/${target}.dec)
-	rm -f /var/cache/cryptsetup/2fa/${target}.hpinx /var/cache/cryptsetup/2fa/${target}.dec
-	[ "$tmp2cached" = "1" ] && echo "cached_tmp2pass=$R" >> /var/cache/cryptsetup/2fa/log
+	local R=$(cat ${cachedir}/${target}.dec)
+	rm -f ${cachedir}/${target}.hpinx ${cachedir}/${target}.dec
+	[ "$tmp2cached" = "1" ] && echo "cached_tmp2pass=$R" >> ${cachedir}/log
 	echo -n $R
-	echo tpm2_keypair_used >> /var/cache/cryptsetup/2fa/${target}.log
+	echo tpm2_keypair_used >> ${cachedir}/${target}.log
 	exit 0
 }
 

@@ -15,9 +15,8 @@ Before using this tool, be sure /etc/cryptsetup/2fa.conf
 contains what you want.
 
 Before adding the Yubikey to the LUKS slot, you need to initialize
-your Yubikey. You can do so using the privacyIDEA management system
-or simply by using the command line. The following command will
-create a key for challenges response in Yubikey slot 2:
+your Yubikey. You can do so simply by using the command line. 
+The following command will create a key for challenges response in Yubikey slot 2:
 
     ykpersonalize -2 -ochal-resp -ochal-hmac -ohmac-lt64 -oserial-api-visible   
 

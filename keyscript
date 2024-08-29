@@ -9,7 +9,7 @@ methods=",${T["methods"]},"
 ykslot=${T["yubikey-challenge-ykslot"]}
 ykpass=${T["yubikey-challenge-pass"]}
 tpm2pin="${T["tpm2-keypair-pin"]}"
-tmp2cached="${T["tpm2-keypair-cached"]}"
+tpm2cached="${T["tpm2-keypair-cached"]}"
 ykcached="${T["yubikey-challenge-cached"]}"
 
 if [ -z "$cryptkeyscript" ]; then
@@ -55,7 +55,7 @@ yubikey_challenge() {
 	if [ -z "$(echo $methods | grep ',yubikey-challenge,')" ];then
 		return
 	fi
-	local cached_ykpass=$(grep '^cached_ykpass=' ${cachedir}/log | cut -d= -f2-)
+	local cached_ykpass=$(grep '^cached_ykpass=' ${cachedir}/log | tail -1 | cut -d= -f2-)
 	if [ -n "${cached_ykpass}" ] && [ -z "$(grep 'cached_ykpass_used' ${cachedir}/${target}.log)" ];then
 		echo cached_ykpass_used >> ${cachedir}/${target}.log
 		echo -n "$cached_ykpass"
@@ -99,11 +99,10 @@ tpm2_keypair() {
 	if [ -z "$(echo $methods | grep ',tpm2-keypair,')" ];then
 		return
 	fi
-	local cached_tmp2pass=$(grep '^cached_tpm2pass=' ${cachedir}/log | cut -d= -f2-)
-	if [ -n "${cached_tmp2pass}" ] && [ -z "$(grep 'cached_tmp2pass_used' ${cachedir}/${target}.log)" ];then
-		echo cached_tpm2pass_used >> ${cachedir}/${target}.log
-		echo -n "$cached_tpm2pass"
-		exit 0
+	local pin=$tpm2pin
+	local cached_tpm2pin=$(grep '^cached_tpm2pin=' ${cachedir}/log | tail -1 | cut -d= -f2-)
+	if [ -n "${cached_tpm2pin}" ] && [ -z "$(grep 'cached_tpm2pass_used' ${cachedir}/${target}.log)" ];then
+		pin=$cached_tpm2pin
 	fi
 	if [ -n "$(grep 'tpm2_keypair_used' ${cachedir}/${target}.log)" ];then
 		return
@@ -116,12 +115,11 @@ tpm2_keypair() {
 		echo "Cannot find tpm2 key files" >&2
 		return
 	fi
-	local pin=$tpm2pin
 	if [ -z "$pin" ];then
 		pin=$(${cryptkeyscript} "Please input the PIN for TPM2 keypair for $target")
 	fi
-	pin=`echo $pin | sha256sum | cut -b 1-16`
-	echo -n $pin > ${cachedir}/${target}.hpinx
+	local hpinx=`echo $pin | sha256sum | cut -b 1-16`
+	echo -n $hpinx > ${cachedir}/${target}.hpinx
 	rm -f ${cachedir}/primary.ctx ${cachedir}/key.ctx
 	tpm2_createprimary -c ${cachedir}/primary.ctx >> ${cachedir}/${target}.log
 	tpm2_load -C ${cachedir}/primary.ctx -u /etc/cryptsetup/2fa/key.pub -r /etc/cryptsetup/2fa/key.priv -c ${cachedir}/key.ctx >> ${cachedir}/${target}.log
@@ -133,7 +131,7 @@ tpm2_keypair() {
 	fi
 	local R=$(cat ${cachedir}/${target}.dec)
 	rm -f ${cachedir}/${target}.hpinx ${cachedir}/${target}.dec
-	[ "$tmp2cached" = "1" ] && echo "cached_tmp2pass=$R" >> ${cachedir}/log
+	[ "$tpm2cached" = "1" ] && echo "cached_tpm2pin=$pin" >> ${cachedir}/log
 	echo -n $R
 	echo tpm2_keypair_used >> ${cachedir}/${target}.log
 	exit 0
